@@ -1,9 +1,14 @@
 """Tests for Alpicool BLE protocol parser."""
 
+import copy
+
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from alpicool_protocol import (
     FridgeState,
     FrameAssembler,
+    PendingQueue,
     build_frame,
     build_query,
     build_set,
@@ -625,6 +630,226 @@ class TestFuzz:
     def test_parse_response_does_not_modify_input(self):
         """Ensure parse_response doesn't mutate the input bytes."""
         original = bytes(DOC_RESPONSE)
-        copy = bytearray(original)
+        data_copy = bytearray(original)
         parse_response(original)
-        assert original == bytes(copy)
+        assert original == bytes(data_copy)
+
+
+def _base_state(**overrides) -> FridgeState:
+    """Build a FridgeState with sensible defaults for queue tests."""
+    defaults = dict(
+        powered_on=True, run_mode=0, battery_saver=0,
+        unit1_target_temp=3, temp_max=20, temp_min=-20,
+        unit1_hysteresis=2, temp_unit=0,
+        unit1_tc_cold=-3,
+    )
+    defaults.update(overrides)
+    return FridgeState(**defaults)
+
+
+class TestPendingQueue:
+    def test_connected_sends_immediately(self):
+        queue = PendingQueue()
+        current = _base_state()
+        queue.on_connect(current)
+        desired = _base_state(unit1_target_temp=5)
+        frame = queue.enqueue(desired, current)
+        assert frame is not None
+        assert queue.pending is None
+
+    def test_disconnected_buffers(self):
+        queue = PendingQueue()
+        current = _base_state()
+        desired = _base_state(unit1_target_temp=5)
+        frame = queue.enqueue(desired, current)
+        assert frame is None
+        assert queue.pending is not None
+        assert queue.pending.unit1_target_temp == 5
+
+    def test_reconnect_flushes(self):
+        queue = PendingQueue()
+        current = _base_state()
+        desired = _base_state(unit1_target_temp=5)
+        queue.enqueue(desired, current)
+        frame = queue.on_connect(current)
+        assert frame is not None
+        assert queue.pending is None
+
+    def test_merge_multiple_updates(self):
+        """target=5 then mode=Eco → single pending with both."""
+        queue = PendingQueue()
+        current = _base_state()
+        queue.enqueue(_base_state(unit1_target_temp=5), current)
+        queue.enqueue(_base_state(unit1_target_temp=5, run_mode=1), current)
+        assert queue.pending.unit1_target_temp == 5
+        assert queue.pending.run_mode == 1
+
+    def test_same_field_overwrites(self):
+        """target=5 then target=3 → pending has target=3."""
+        queue = PendingQueue()
+        current = _base_state()
+        queue.enqueue(_base_state(unit1_target_temp=5), current)
+        queue.enqueue(_base_state(unit1_target_temp=3), current)
+        assert queue.pending.unit1_target_temp == 3
+
+    def test_target_only_diff_uses_set_target(self):
+        current = _base_state()
+        desired = _base_state(unit1_target_temp=5)
+        frame = PendingQueue.diff(current, desired)
+        assert frame[3] == CMD_SET_UNIT1_TARGET
+        assert frame[4] == 5
+
+    def test_multi_field_diff_uses_set(self):
+        current = _base_state()
+        desired = _base_state(unit1_target_temp=5, run_mode=1)
+        frame = PendingQueue.diff(current, desired)
+        assert frame[3] == CMD_SET
+
+    def test_timeout_expires_pending(self):
+        time_val = [0]
+        queue = PendingQueue(time_func=lambda: time_val[0])
+        current = _base_state()
+        queue.enqueue(_base_state(unit1_target_temp=5), current)
+        time_val[0] = 31000  # past 30s timeout
+        frame = queue.on_connect(current)
+        assert frame is None
+        assert queue.pending is None
+
+    def test_write_failure_retries(self):
+        queue = PendingQueue()
+        assert queue.on_write_failure() is True   # retry 1
+        assert queue.on_write_failure() is True   # retry 2
+        assert queue.on_write_failure() is False  # exhausted
+
+    def test_max_retries_drops_pending(self):
+        queue = PendingQueue()
+        current = _base_state()
+        queue.enqueue(_base_state(unit1_target_temp=5), current)
+        for _ in range(PendingQueue.MAX_RETRIES):
+            queue.on_write_failure()
+        frame = queue.on_connect(current)
+        assert frame is None
+        assert queue.pending is None
+
+    def test_disconnect_preserves_pending(self):
+        queue = PendingQueue()
+        current = _base_state()
+        queue.on_connect(current)
+        queue.on_disconnect()
+        queue.enqueue(_base_state(unit1_target_temp=5), current)
+        assert queue.pending is not None
+        assert not queue.connected
+
+    def test_multiple_disconnect_reconnect_cycles(self):
+        queue = PendingQueue()
+        current = _base_state()
+        queue.enqueue(_base_state(unit1_target_temp=5), current)
+        queue.on_connect(current)
+        queue.on_disconnect()
+        queue.enqueue(_base_state(unit1_target_temp=7), current)
+        frame = queue.on_connect(current)
+        assert frame is not None
+        assert queue.pending is None
+
+    def test_empty_pending_on_reconnect(self):
+        queue = PendingQueue()
+        current = _base_state()
+        frame = queue.on_connect(current)
+        assert frame is None
+
+    def test_no_diff_still_sends_set(self):
+        """Even when desired == current, CMD_SET is sent (no target-only shortcut)."""
+        current = _base_state()
+        desired = copy.copy(current)
+        frame = PendingQueue.diff(current, desired)
+        assert frame[3] == CMD_SET
+
+    def test_enqueue_resets_retries(self):
+        """Fresh enqueue after pending is empty resets retry count."""
+        queue = PendingQueue()
+        current = _base_state()
+        queue.enqueue(_base_state(unit1_target_temp=5), current)
+        queue.on_write_failure()
+        queue.on_write_failure()
+        # Flush via connect (clears pending)
+        queue.on_connect(current)
+        # New enqueue should reset
+        queue.on_disconnect()
+        queue.enqueue(_base_state(unit1_target_temp=7), current)
+        frame = queue.on_connect(current)
+        assert frame is not None
+
+    def test_flush_returns_valid_frame(self):
+        queue = PendingQueue()
+        current = _base_state()
+        queue.enqueue(_base_state(unit1_target_temp=5), current)
+        frame = queue.on_connect(current)
+        assert validate_frame(frame)
+
+
+class TestHypothesisFuzz:
+    @given(data=st.binary(min_size=0, max_size=300))
+    @settings(max_examples=200)
+    def test_parse_response_never_crashes(self, data):
+        result = parse_response(data)
+        assert result is None or isinstance(result, FridgeState)
+
+    @given(data=st.binary(min_size=0, max_size=300))
+    @settings(max_examples=200)
+    def test_validate_frame_returns_bool(self, data):
+        result = validate_frame(data)
+        assert isinstance(result, bool)
+
+    @given(data=st.binary(min_size=0, max_size=300))
+    @settings(max_examples=200)
+    def test_validate_checksum_returns_bool(self, data):
+        result = validate_checksum(data)
+        assert isinstance(result, bool)
+
+    @given(chunks=st.lists(st.binary(min_size=0, max_size=100), max_size=20))
+    @settings(max_examples=200)
+    def test_frame_assembler_never_crashes(self, chunks):
+        asm = FrameAssembler()
+        for chunk in chunks:
+            frames = asm.feed(chunk)
+            assert isinstance(frames, list)
+            for frame in frames:
+                assert len(frame) >= 3
+
+    @given(cmd=st.integers(min_value=0, max_value=255),
+           payload=st.binary(min_size=0, max_size=50))
+    @settings(max_examples=200)
+    def test_build_frame_roundtrip(self, cmd, payload):
+        frame = build_frame(cmd, payload)
+        assert validate_frame(frame)
+        assert validate_checksum(frame)
+
+    @given(temp=st.integers(min_value=-128, max_value=127))
+    @settings(max_examples=200)
+    def test_build_set_target_valid(self, temp):
+        frame = build_set_target(temp)
+        assert validate_frame(frame)
+        assert validate_checksum(frame)
+        assert frame[3] == CMD_SET_UNIT1_TARGET
+
+    @given(temp=st.integers(min_value=-128, max_value=127))
+    @settings(max_examples=200)
+    def test_build_set_target_zone2_valid(self, temp):
+        frame = build_set_target(temp, zone=2)
+        assert validate_frame(frame)
+        assert validate_checksum(frame)
+
+    @given(
+        target=st.integers(min_value=-20, max_value=20),
+        mode=st.integers(min_value=0, max_value=1),
+        batt=st.integers(min_value=0, max_value=2),
+    )
+    @settings(max_examples=200)
+    def test_build_set_always_valid(self, target, mode, batt):
+        state = FridgeState(
+            powered_on=True, run_mode=mode, battery_saver=batt,
+            unit1_target_temp=target,
+        )
+        frame = build_set(state)
+        assert validate_frame(frame)
+        assert validate_checksum(frame)

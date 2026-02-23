@@ -26,6 +26,7 @@ void AlpicoolBle::update() {
     this->send_query();
     this->last_query_ = now;
   }
+  this->flush_pending_();
 }
 
 void AlpicoolBle::gattc_event_handler(esp_gattc_cb_event_t event,
@@ -78,6 +79,7 @@ void AlpicoolBle::gattc_event_handler(esp_gattc_cb_event_t event,
         this->connected_ = true;
         this->last_query_ = 0;
         this->send_query();
+        this->flush_pending_();
       } else {
         ESP_LOGW(TAG, "Register notify failed: %d", param->reg_for_notify.status);
       }
@@ -238,6 +240,7 @@ void AlpicoolBle::send_frame_(uint8_t cmd, const uint8_t *payload, size_t payloa
 
   if (status != ESP_OK) {
     ESP_LOGW(TAG, "Write failed: %d", status);
+    this->pending_retries_++;
   } else {
     ESP_LOGD(TAG, "Sent cmd=0x%02x len=%d", cmd, frame.size());
   }
@@ -248,27 +251,83 @@ void AlpicoolBle::send_query() {
 }
 
 void AlpicoolBle::send_set_target(int8_t temp) {
-  uint8_t payload[] = {(uint8_t) temp};
-  this->send_frame_(CMD_SET_UNIT1_TARGET, payload, 1);
+  FridgeState desired = this->pending_desired_.value_or(this->state_);
+  desired.target_temp = temp;
+  this->enqueue_desired_(desired);
 }
 
 void AlpicoolBle::send_settings(FridgeState desired) {
-  uint8_t payload[14];
-  payload[0] = desired.controls_locked ? 1 : 0;
-  payload[1] = desired.powered_on ? 1 : 0;
-  payload[2] = desired.run_mode;
-  payload[3] = desired.battery_saver;
-  payload[4] = (uint8_t) desired.target_temp;
-  payload[5] = (uint8_t) desired.temp_max;
-  payload[6] = (uint8_t) desired.temp_min;
-  payload[7] = (uint8_t) desired.hysteresis;
-  payload[8] = desired.start_delay;
-  payload[9] = desired.temp_unit;
-  payload[10] = (uint8_t) desired.tc_hot;
-  payload[11] = (uint8_t) desired.tc_mid;
-  payload[12] = (uint8_t) desired.tc_cold;
-  payload[13] = (uint8_t) desired.tc_halt;
-  this->send_frame_(CMD_SET, payload, 14);
+  this->enqueue_desired_(desired);
+}
+
+void AlpicoolBle::enqueue_desired_(FridgeState desired) {
+  if (!this->pending_desired_.has_value()) {
+    this->pending_queued_at_ = millis();
+    this->pending_retries_ = 0;
+  }
+  this->pending_desired_ = desired;
+  if (this->connected_) {
+    this->flush_pending_();
+  }
+}
+
+void AlpicoolBle::flush_pending_() {
+  if (!this->pending_desired_.has_value()) return;
+  if (!this->connected_ || this->write_handle_ == 0) return;
+
+  uint32_t now = millis();
+  if (now - this->pending_queued_at_ > CMD_TIMEOUT_MS) {
+    ESP_LOGW(TAG, "Pending command expired after %ums", now - this->pending_queued_at_);
+    this->pending_desired_.reset();
+    return;
+  }
+  if (this->pending_retries_ >= CMD_MAX_RETRIES) {
+    ESP_LOGW(TAG, "Pending command dropped after %d retries", this->pending_retries_);
+    this->pending_desired_.reset();
+    return;
+  }
+
+  FridgeState &desired = *this->pending_desired_;
+
+  // Use fast CMD_SET_UNIT1_TARGET when only target_temp differs
+  bool target_only = (desired.target_temp != this->state_.target_temp) &&
+                     (desired.controls_locked == this->state_.controls_locked) &&
+                     (desired.powered_on == this->state_.powered_on) &&
+                     (desired.run_mode == this->state_.run_mode) &&
+                     (desired.battery_saver == this->state_.battery_saver) &&
+                     (desired.temp_max == this->state_.temp_max) &&
+                     (desired.temp_min == this->state_.temp_min) &&
+                     (desired.hysteresis == this->state_.hysteresis) &&
+                     (desired.start_delay == this->state_.start_delay) &&
+                     (desired.temp_unit == this->state_.temp_unit) &&
+                     (desired.tc_hot == this->state_.tc_hot) &&
+                     (desired.tc_mid == this->state_.tc_mid) &&
+                     (desired.tc_cold == this->state_.tc_cold) &&
+                     (desired.tc_halt == this->state_.tc_halt);
+
+  if (target_only) {
+    uint8_t payload[] = {(uint8_t) desired.target_temp};
+    this->send_frame_(CMD_SET_UNIT1_TARGET, payload, 1);
+  } else {
+    uint8_t payload[14];
+    payload[0] = desired.controls_locked ? 1 : 0;
+    payload[1] = desired.powered_on ? 1 : 0;
+    payload[2] = desired.run_mode;
+    payload[3] = desired.battery_saver;
+    payload[4] = (uint8_t) desired.target_temp;
+    payload[5] = (uint8_t) desired.temp_max;
+    payload[6] = (uint8_t) desired.temp_min;
+    payload[7] = (uint8_t) desired.hysteresis;
+    payload[8] = desired.start_delay;
+    payload[9] = desired.temp_unit;
+    payload[10] = (uint8_t) desired.tc_hot;
+    payload[11] = (uint8_t) desired.tc_mid;
+    payload[12] = (uint8_t) desired.tc_cold;
+    payload[13] = (uint8_t) desired.tc_halt;
+    this->send_frame_(CMD_SET, payload, 14);
+  }
+
+  this->pending_desired_.reset();
 }
 
 // --- Switch ---
@@ -341,13 +400,7 @@ void AlpicoolClimate::control(const climate::ClimateCall &call) {
     else if (preset == "Eco") desired.run_mode = 1;
   }
 
-  // Use SetUnit1Target for target-only changes (faster ACK)
-  if (call.get_target_temperature().has_value() &&
-      !call.get_mode().has_value() && !preset_changed) {
-    this->parent_->send_set_target(desired.target_temp);
-  } else {
-    this->parent_->send_settings(desired);
-  }
+  this->parent_->send_settings(desired);
 }
 
 }  // namespace alpicool_ble

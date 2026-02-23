@@ -199,6 +199,92 @@ def parse_response(frame: bytes) -> Optional[FridgeState]:
     return state
 
 
+class PendingQueue:
+    """Command queue that buffers desired state and replays on BLE reconnect.
+
+    Mirrors the C++ enqueue_desired_/flush_pending_ logic for testing.
+    """
+
+    TIMEOUT_MS = 30000
+    MAX_RETRIES = 3
+
+    def __init__(self, time_func=None):
+        self._connected = False
+        self._pending: Optional[FridgeState] = None
+        self._queued_at = 0
+        self._retries = 0
+        self._time = time_func or (lambda: 0)
+
+    @property
+    def pending(self) -> Optional[FridgeState]:
+        return self._pending
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def enqueue(self, desired: FridgeState, current: FridgeState) -> Optional[bytes]:
+        """Merge desired into pending. Returns frame if connected, else None."""
+        if self._pending is None:
+            self._queued_at = self._time()
+            self._retries = 0
+        self._pending = desired
+        if self._connected:
+            return self._flush(current)
+        return None
+
+    def on_connect(self, current: FridgeState) -> Optional[bytes]:
+        """Mark connected and flush pending. Returns frame or None."""
+        self._connected = True
+        return self._flush(current)
+
+    def on_disconnect(self):
+        """Mark disconnected, preserve pending."""
+        self._connected = False
+
+    def on_write_failure(self) -> bool:
+        """Increment retries. Returns True if should retry, False if exhausted."""
+        self._retries += 1
+        return self._retries < self.MAX_RETRIES
+
+    def _flush(self, current: FridgeState) -> Optional[bytes]:
+        if self._pending is None:
+            return None
+        now = self._time()
+        if now - self._queued_at > self.TIMEOUT_MS:
+            self._pending = None
+            return None
+        if self._retries >= self.MAX_RETRIES:
+            self._pending = None
+            return None
+        frame = self.diff(current, self._pending)
+        self._pending = None
+        return frame
+
+    @staticmethod
+    def diff(current: FridgeState, desired: FridgeState) -> bytes:
+        """Return CMD_SET_UNIT1_TARGET frame if only target differs, else CMD_SET."""
+        target_only = (
+            desired.unit1_target_temp != current.unit1_target_temp
+            and desired.controls_locked == current.controls_locked
+            and desired.powered_on == current.powered_on
+            and desired.run_mode == current.run_mode
+            and desired.battery_saver == current.battery_saver
+            and desired.temp_max == current.temp_max
+            and desired.temp_min == current.temp_min
+            and desired.unit1_hysteresis == current.unit1_hysteresis
+            and desired.start_delay == current.start_delay
+            and desired.temp_unit == current.temp_unit
+            and desired.unit1_tc_hot == current.unit1_tc_hot
+            and desired.unit1_tc_mid == current.unit1_tc_mid
+            and desired.unit1_tc_cold == current.unit1_tc_cold
+            and desired.unit1_tc_halt == current.unit1_tc_halt
+        )
+        if target_only:
+            return build_set_target(desired.unit1_target_temp)
+        return build_set(desired)
+
+
 class FrameAssembler:
     """Buffer and reassemble partial BLE frames."""
 

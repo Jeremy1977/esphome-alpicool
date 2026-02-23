@@ -7,6 +7,7 @@
 #include "esphome/components/select/select.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/switch/switch.h"
+#include <optional>
 #include <vector>
 
 namespace esphome {
@@ -96,6 +97,11 @@ class AlpicoolBle : public PollingComponent, public ble_client::BLEClientNode {
   void parse_state_payload_(const uint8_t *payload, size_t length);
   void publish_state_();
   void send_frame_(uint8_t cmd, const uint8_t *payload, size_t payload_len);
+  void enqueue_desired_(FridgeState desired);
+  void flush_pending_();
+
+  static const uint32_t CMD_TIMEOUT_MS = 30000;
+  static const uint8_t CMD_MAX_RETRIES = 3;
 
   uint16_t write_handle_{0};
   uint16_t notify_handle_{0};
@@ -105,6 +111,10 @@ class AlpicoolBle : public PollingComponent, public ble_client::BLEClientNode {
 
   std::vector<uint8_t> rx_buffer_;
   FridgeState state_;
+
+  std::optional<FridgeState> pending_desired_;
+  uint32_t pending_queued_at_{0};
+  uint8_t pending_retries_{0};
 
   // Sensors
   sensor::Sensor *current_temp_sensor_{nullptr};
