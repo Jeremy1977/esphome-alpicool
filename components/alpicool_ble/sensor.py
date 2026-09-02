@@ -16,6 +16,8 @@ from . import ALPICOOL_BLE_COMPONENT_SCHEMA, AlpicoolBle, CONF_ALPICOOL_BLE_ID
 
 CONF_CURRENT_TEMPERATURE = "current_temperature"
 CONF_TARGET_TEMPERATURE = "target_temperature"
+CONF_ZONE2_CURRENT_TEMPERATURE = "zone2_current_temperature"
+CONF_ZONE2_TARGET_TEMPERATURE = "zone2_target_temperature"
 CONF_BATTERY_PERCENT = "battery_percent"
 
 CONFIG_SCHEMA = ALPICOOL_BLE_COMPONENT_SCHEMA.extend(
@@ -27,6 +29,18 @@ CONFIG_SCHEMA = ALPICOOL_BLE_COMPONENT_SCHEMA.extend(
             accuracy_decimals=0,
         ),
         cv.Optional(CONF_TARGET_TEMPERATURE): sensor.sensor_schema(
+            unit_of_measurement=UNIT_CELSIUS,
+            device_class=DEVICE_CLASS_TEMPERATURE,
+            state_class=STATE_CLASS_MEASUREMENT,
+            accuracy_decimals=0,
+        ),
+        cv.Optional(CONF_ZONE2_CURRENT_TEMPERATURE): sensor.sensor_schema(
+            unit_of_measurement=UNIT_CELSIUS,
+            device_class=DEVICE_CLASS_TEMPERATURE,
+            state_class=STATE_CLASS_MEASUREMENT,
+            accuracy_decimals=0,
+        ),
+        cv.Optional(CONF_ZONE2_TARGET_TEMPERATURE): sensor.sensor_schema(
             unit_of_measurement=UNIT_CELSIUS,
             device_class=DEVICE_CLASS_TEMPERATURE,
             state_class=STATE_CLASS_MEASUREMENT,
@@ -58,6 +72,14 @@ async def to_code(config):
     if CONF_TARGET_TEMPERATURE in config:
         sens = await sensor.new_sensor(config[CONF_TARGET_TEMPERATURE])
         cg.add(hub.set_target_temperature_sensor(sens))
+
+    if CONF_ZONE2_CURRENT_TEMPERATURE in config:
+        sens = await sensor.new_sensor(config[CONF_ZONE2_CURRENT_TEMPERATURE])
+        cg.add(hub.set_zone2_current_temperature_sensor(sens))
+
+    if CONF_ZONE2_TARGET_TEMPERATURE in config:
+        sens = await sensor.new_sensor(config[CONF_ZONE2_TARGET_TEMPERATURE])
+        cg.add(hub.set_zone2_target_temperature_sensor(sens))
 
     if CONF_BATTERY_PERCENT in config:
         sens = await sensor.new_sensor(config[CONF_BATTERY_PERCENT])

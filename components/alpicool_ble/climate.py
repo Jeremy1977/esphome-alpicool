@@ -3,6 +3,8 @@ import esphome.config_validation as cv
 from esphome.components import climate
 from esphome.const import CONF_ID
 
+CONF_ZONE = "zone"
+
 from . import ALPICOOL_BLE_COMPONENT_SCHEMA, AlpicoolBle, CONF_ALPICOOL_BLE_ID, alpicool_ble_ns
 
 AlpicoolClimate = alpicool_ble_ns.class_(
@@ -11,6 +13,10 @@ AlpicoolClimate = alpicool_ble_ns.class_(
 
 CONFIG_SCHEMA = climate.climate_schema(AlpicoolClimate).extend(
     ALPICOOL_BLE_COMPONENT_SCHEMA
+).extend(
+    {
+        cv.Optional(CONF_ZONE, default=1): cv.int_range(min=1, max=2),
+    }
 ).extend(cv.COMPONENT_SCHEMA)
 
 
@@ -21,4 +27,5 @@ async def to_code(config):
 
     hub = await cg.get_variable(config[CONF_ALPICOOL_BLE_ID])
     cg.add(var.set_parent(hub))
-    cg.add(hub.set_climate(var))
+    cg.add(var.set_zone(config[CONF_ZONE]))
+    cg.add(hub.set_climate(var, config[CONF_ZONE]))

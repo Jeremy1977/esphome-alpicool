@@ -263,10 +263,9 @@ class PendingQueue:
 
     @staticmethod
     def diff(current: FridgeState, desired: FridgeState) -> bytes:
-        """Return CMD_SET_UNIT1_TARGET frame if only target differs, else CMD_SET."""
-        target_only = (
-            desired.unit1_target_temp != current.unit1_target_temp
-            and desired.controls_locked == current.controls_locked
+        """Use a zone-specific target command when only one setpoint changes."""
+        common_unchanged = (
+            desired.controls_locked == current.controls_locked
             and desired.powered_on == current.powered_on
             and desired.run_mode == current.run_mode
             and desired.battery_saver == current.battery_saver
@@ -280,8 +279,23 @@ class PendingQueue:
             and desired.unit1_tc_cold == current.unit1_tc_cold
             and desired.unit1_tc_halt == current.unit1_tc_halt
         )
-        if target_only:
-            return build_set_target(desired.unit1_target_temp)
+        unit1_target_only = (
+            common_unchanged
+            and desired.unit1_target_temp != current.unit1_target_temp
+            and desired.unit2_target_temp == current.unit2_target_temp
+        )
+        if unit1_target_only:
+            return build_set_target(desired.unit1_target_temp, zone=1)
+
+        unit2_target_only = (
+            common_unchanged
+            and desired.unit1_target_temp == current.unit1_target_temp
+            and desired.unit2_target_temp is not None
+            and desired.unit2_target_temp != current.unit2_target_temp
+        )
+        if unit2_target_only:
+            assert desired.unit2_target_temp is not None
+            return build_set_target(desired.unit2_target_temp, zone=2)
         return build_set(desired)
 
 

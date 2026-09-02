@@ -159,6 +159,17 @@ void AlpicoolBle::parse_state_payload_(const uint8_t *p, size_t len) {
   this->state_.battery_percent = p[15];
   this->state_.battery_volt_int = p[16];
   this->state_.battery_volt_frac = p[17];
+  this->state_.dual_zone = len >= 28;
+  if (this->state_.dual_zone) {
+    this->state_.unit2_target_temp = static_cast<int8_t>(p[18]);
+    this->state_.unit2_hysteresis = static_cast<int8_t>(p[21]);
+    this->state_.unit2_tc_hot = static_cast<int8_t>(p[22]);
+    this->state_.unit2_tc_mid = static_cast<int8_t>(p[23]);
+    this->state_.unit2_tc_cold = static_cast<int8_t>(p[24]);
+    this->state_.unit2_tc_halt = static_cast<int8_t>(p[25]);
+    this->state_.unit2_current_temp = static_cast<int8_t>(p[26]);
+    this->state_.running_status = p[27];
+  }
   this->state_.valid = true;
 }
 
@@ -180,6 +191,12 @@ void AlpicoolBle::publish_state_() {
     float voltage = this->state_.battery_volt_int + this->state_.battery_volt_frac / 10.0f;
     this->battery_voltage_sensor_->publish_state(voltage);
   }
+  if (this->state_.dual_zone) {
+    if (this->zone2_current_temp_sensor_ != nullptr)
+      this->zone2_current_temp_sensor_->publish_state(this->state_.unit2_current_temp);
+    if (this->zone2_target_temp_sensor_ != nullptr)
+      this->zone2_target_temp_sensor_->publish_state(this->state_.unit2_target_temp);
+  }
   if (this->powered_on_sensor_ != nullptr)
     this->powered_on_sensor_->publish_state(this->state_.powered_on);
   if (this->controls_locked_sensor_ != nullptr)
@@ -192,6 +209,9 @@ void AlpicoolBle::publish_state_() {
   // Update climate
   if (this->climate_ != nullptr) {
     this->climate_->update_from_state(this->state_);
+  }
+  if (this->zone2_climate_ != nullptr && this->state_.dual_zone) {
+    this->zone2_climate_->update_from_state(this->state_);
   }
 
   // Update selects
@@ -250,10 +270,9 @@ void AlpicoolBle::send_query() {
   this->send_frame_(CMD_QUERY, nullptr, 0);
 }
 
-void AlpicoolBle::send_set_target(int8_t temp) {
-  FridgeState desired = this->pending_desired_.value_or(this->state_);
-  desired.target_temp = temp;
-  this->enqueue_desired_(desired);
+void AlpicoolBle::send_set_target(int8_t temp, uint8_t zone) {
+  uint8_t payload[] = {static_cast<uint8_t>(temp)};
+  this->send_frame_(zone == 2 ? CMD_SET_UNIT2_TARGET : CMD_SET_UNIT1_TARGET, payload, 1);
 }
 
 void AlpicoolBle::send_settings(FridgeState desired) {
@@ -375,8 +394,14 @@ climate::ClimateTraits AlpicoolClimate::traits() {
 }
 
 void AlpicoolClimate::update_from_state(const FridgeState &state) {
-  this->current_temperature = state.current_temp;
-  this->target_temperature = state.target_temp;
+  if (this->zone_ == 2) {
+    if (!state.dual_zone) return;
+    this->current_temperature = state.unit2_current_temp;
+    this->target_temperature = state.unit2_target_temp;
+  } else {
+    this->current_temperature = state.current_temp;
+    this->target_temperature = state.target_temp;
+  }
   this->mode = state.powered_on ? climate::CLIMATE_MODE_COOL : climate::CLIMATE_MODE_OFF;
   this->set_custom_preset_(state.run_mode == 0 ? "Max" : "Eco");
   this->publish_state();
@@ -384,23 +409,26 @@ void AlpicoolClimate::update_from_state(const FridgeState &state) {
 
 void AlpicoolClimate::control(const climate::ClimateCall &call) {
   if (this->parent_ == nullptr) return;
-  FridgeState desired = this->parent_->get_state();
 
-  if (call.get_mode().has_value()) {
-    auto mode = *call.get_mode();
-    desired.powered_on = (mode != climate::CLIMATE_MODE_OFF);
-  }
   if (call.get_target_temperature().has_value()) {
-    desired.target_temp = (int8_t) *call.get_target_temperature();
+    this->parent_->send_set_target((int8_t) *call.get_target_temperature(), this->zone_);
   }
-  bool preset_changed = call.has_custom_preset();
-  if (preset_changed) {
-    auto preset = call.get_custom_preset();
+
+  // Power and Eco/Max are shared appliance settings, so they are owned by Zone 1.
+  if (this->zone_ == 2) return;
+  FridgeState desired = this->parent_->get_state();
+  if (call.get_mode().has_value()) {
+    desired.powered_on = (*call.get_mode() != climate::CLIMATE_MODE_OFF);
+  }
+  auto custom_preset = call.get_custom_preset();
+  if (custom_preset.has_value()) {
+    auto preset = *custom_preset;
     if (preset == "Max") desired.run_mode = 0;
     else if (preset == "Eco") desired.run_mode = 1;
   }
-
-  this->parent_->send_settings(desired);
+  if (call.get_mode().has_value() || custom_preset.has_value()) {
+    this->parent_->send_settings(desired);
+  }
 }
 
 }  // namespace alpicool_ble

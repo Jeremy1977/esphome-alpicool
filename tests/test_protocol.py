@@ -705,6 +705,13 @@ class TestPendingQueue:
         frame = PendingQueue.diff(current, desired)
         assert frame[3] == CMD_SET
 
+    def test_zone2_target_only_diff_uses_zone2_target_command(self):
+        current = _base_state(unit2_target_temp=-10)
+        desired = _base_state(unit2_target_temp=-18)
+        frame = PendingQueue.diff(current, desired)
+        assert frame[3] == 0x06
+        assert frame[4] == 0xEE  # -18 as unsigned byte
+
     def test_timeout_expires_pending(self):
         time_val = [0]
         queue = PendingQueue(time_func=lambda: time_val[0])

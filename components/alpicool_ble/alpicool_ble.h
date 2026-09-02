@@ -43,6 +43,16 @@ struct FridgeState {
   uint8_t battery_percent{0};
   uint8_t battery_volt_int{0};
   uint8_t battery_volt_frac{0};
+  // Present only in a dual-zone response (payload >= 28 bytes).
+  bool dual_zone{false};
+  int8_t unit2_target_temp{0};
+  int8_t unit2_hysteresis{2};
+  int8_t unit2_tc_hot{0};
+  int8_t unit2_tc_mid{0};
+  int8_t unit2_tc_cold{0};
+  int8_t unit2_tc_halt{0};
+  int8_t unit2_current_temp{0};
+  uint8_t running_status{0};
   bool valid{false};
 };
 
@@ -66,6 +76,8 @@ class AlpicoolBle : public PollingComponent, public ble_client::BLEClientNode {
   // Sensors
   void set_current_temperature_sensor(sensor::Sensor *s) { this->current_temp_sensor_ = s; }
   void set_target_temperature_sensor(sensor::Sensor *s) { this->target_temp_sensor_ = s; }
+  void set_zone2_current_temperature_sensor(sensor::Sensor *s) { this->zone2_current_temp_sensor_ = s; }
+  void set_zone2_target_temperature_sensor(sensor::Sensor *s) { this->zone2_target_temp_sensor_ = s; }
   void set_battery_percent_sensor(sensor::Sensor *s) { this->battery_percent_sensor_ = s; }
   void set_battery_voltage_sensor(sensor::Sensor *s) { this->battery_voltage_sensor_ = s; }
 
@@ -78,7 +90,10 @@ class AlpicoolBle : public PollingComponent, public ble_client::BLEClientNode {
   void set_controls_lock_switch(AlpicoolBleSwitch *s) { this->controls_lock_switch_ = s; }
 
   // Climate
-  void set_climate(AlpicoolClimate *c) { this->climate_ = c; }
+  void set_climate(AlpicoolClimate *c, uint8_t zone) {
+    if (zone == 2) this->zone2_climate_ = c;
+    else this->climate_ = c;
+  }
 
   // Selects
   void set_run_mode_select(AlpicoolBleSelect *s) { this->run_mode_select_ = s; }
@@ -86,7 +101,7 @@ class AlpicoolBle : public PollingComponent, public ble_client::BLEClientNode {
 
   // Actions
   void send_query();
-  void send_set_target(int8_t temp);
+  void send_set_target(int8_t temp, uint8_t zone = 1);
   void send_settings(FridgeState desired);
 
   const FridgeState &get_state() const { return this->state_; }
@@ -119,6 +134,8 @@ class AlpicoolBle : public PollingComponent, public ble_client::BLEClientNode {
   // Sensors
   sensor::Sensor *current_temp_sensor_{nullptr};
   sensor::Sensor *target_temp_sensor_{nullptr};
+  sensor::Sensor *zone2_current_temp_sensor_{nullptr};
+  sensor::Sensor *zone2_target_temp_sensor_{nullptr};
   sensor::Sensor *battery_percent_sensor_{nullptr};
   sensor::Sensor *battery_voltage_sensor_{nullptr};
 
@@ -132,6 +149,7 @@ class AlpicoolBle : public PollingComponent, public ble_client::BLEClientNode {
 
   // Climate
   AlpicoolClimate *climate_{nullptr};
+  AlpicoolClimate *zone2_climate_{nullptr};
 
   // Selects
   AlpicoolBleSelect *run_mode_select_{nullptr};
@@ -166,6 +184,7 @@ class AlpicoolBleSelect : public select::Select, public Component {
 class AlpicoolClimate : public climate::Climate, public Component {
  public:
   void set_parent(AlpicoolBle *parent) { this->parent_ = parent; }
+  void set_zone(uint8_t zone) { this->zone_ = zone; }
 
   climate::ClimateTraits traits() override;
   void control(const climate::ClimateCall &call) override;
@@ -174,6 +193,7 @@ class AlpicoolClimate : public climate::Climate, public Component {
 
  protected:
   AlpicoolBle *parent_{nullptr};
+  uint8_t zone_{1};
 };
 
 }  // namespace alpicool_ble
