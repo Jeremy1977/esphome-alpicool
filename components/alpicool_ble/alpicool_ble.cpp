@@ -421,12 +421,12 @@ void AlpicoolClimate::control(const climate::ClimateCall &call) {
     desired.powered_on = (*call.get_mode() != climate::CLIMATE_MODE_OFF);
   }
   auto custom_preset = call.get_custom_preset();
-  if (custom_preset.has_value()) {
-    auto preset = *custom_preset;
+  if (!custom_preset.empty()) {
+    auto preset = custom_preset;
     if (preset == "Max") desired.run_mode = 0;
     else if (preset == "Eco") desired.run_mode = 1;
   }
-  if (call.get_mode().has_value() || custom_preset.has_value()) {
+  if (call.get_mode().has_value() || !custom_preset.empty()) {
     this->parent_->send_settings(desired);
   }
 }
