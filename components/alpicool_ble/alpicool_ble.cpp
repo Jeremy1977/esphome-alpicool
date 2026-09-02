@@ -74,15 +74,42 @@ void AlpicoolBle::gattc_event_handler(esp_gattc_cb_event_t event,
       break;
     }
     case ESP_GATTC_REG_FOR_NOTIFY_EVT: {
-      if (param->reg_for_notify.status == ESP_GATT_OK) {
-        ESP_LOGI(TAG, "Notifications registered, sending first query");
-        this->connected_ = true;
-        this->last_query_ = 0;
-        this->send_query();
-        this->flush_pending_();
-      } else {
+      if (param->reg_for_notify.status != ESP_GATT_OK) {
         ESP_LOGW(TAG, "Register notify failed: %d", param->reg_for_notify.status);
+        break;
       }
+
+      esp_bt_uuid_t cccd_uuid{};
+      cccd_uuid.len = ESP_UUID_LEN_16;
+      cccd_uuid.uuid.uuid16 = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
+      esp_gattc_descr_elem_t cccd{};
+      uint16_t count = 1;
+      auto status = esp_ble_gattc_get_descr_by_char_handle(
+          this->parent_->get_gattc_if(), this->parent_->get_conn_id(), this->notify_handle_, cccd_uuid, &cccd, &count);
+      if (status != ESP_GATT_OK || count == 0) {
+        ESP_LOGW(TAG, "Notification CCCD not found: status=%d count=%u", status, count);
+        break;
+      }
+
+      uint8_t enable_notifications[] = {0x01, 0x00};
+      status = esp_ble_gattc_write_char_descr(
+          this->parent_->get_gattc_if(), this->parent_->get_conn_id(), cccd.handle, sizeof(enable_notifications),
+          enable_notifications, ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
+      if (status != ESP_OK) {
+        ESP_LOGW(TAG, "Enable notifications failed: %d", status);
+      }
+      break;
+    }
+    case ESP_GATTC_WRITE_DESCR_EVT: {
+      if (param->write.status != ESP_GATT_OK) {
+        ESP_LOGW(TAG, "Enable notifications rejected: %d", param->write.status);
+        break;
+      }
+      ESP_LOGI(TAG, "Notifications enabled, sending first query");
+      this->connected_ = true;
+      this->last_query_ = 0;
+      this->send_query();
+      this->flush_pending_();
       break;
     }
     case ESP_GATTC_NOTIFY_EVT: {
