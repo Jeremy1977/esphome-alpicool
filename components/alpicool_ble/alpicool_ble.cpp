@@ -112,8 +112,20 @@ void AlpicoolBle::gattc_event_handler(esp_gattc_cb_event_t event,
       this->flush_pending_();
       break;
     }
+    case ESP_GATTC_WRITE_CHAR_EVT: {
+      if (param->write.status != ESP_GATT_OK) {
+        ESP_LOGW(TAG, "Query write rejected: %d", param->write.status);
+      } else {
+        ESP_LOGD(TAG, "Query write acknowledged");
+      }
+      break;
+    }
     case ESP_GATTC_NOTIFY_EVT: {
-      if (param->notify.handle != this->notify_handle_) break;
+      ESP_LOGD(TAG, "Notify: handle=0x%x len=%d", param->notify.handle, param->notify.value_len);
+      if (param->notify.handle != this->notify_handle_) {
+        ESP_LOGW(TAG, "Ignoring notification from unexpected handle 0x%x", param->notify.handle);
+        break;
+      }
       this->rx_buffer_.insert(this->rx_buffer_.end(),
                               param->notify.value,
                               param->notify.value + param->notify.value_len);
