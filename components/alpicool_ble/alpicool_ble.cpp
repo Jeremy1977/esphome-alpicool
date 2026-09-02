@@ -92,11 +92,11 @@ void AlpicoolBle::gattc_event_handler(esp_gattc_cb_event_t event,
       }
 
       uint8_t enable_notifications[] = {0x01, 0x00};
-      status = esp_ble_gattc_write_char_descr(
+      esp_err_t write_status = esp_ble_gattc_write_char_descr(
           this->parent_->get_gattc_if(), this->parent_->get_conn_id(), cccd.handle, sizeof(enable_notifications),
           enable_notifications, ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
-      if (status != ESP_OK) {
-        ESP_LOGW(TAG, "Enable notifications failed: %d", status);
+      if (write_status != ESP_OK) {
+        ESP_LOGW(TAG, "Enable notifications failed: %d", write_status);
       }
       break;
     }
