@@ -295,7 +295,7 @@ void AlpicoolBle::send_frame_(uint8_t cmd, const uint8_t *payload, size_t payloa
   auto status = esp_ble_gattc_write_char(
       this->parent_->get_gattc_if(), this->parent_->get_conn_id(),
       this->write_handle_, frame.size(), frame.data(),
-      ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
+      ESP_GATT_WRITE_TYPE_NO_RSP, ESP_GATT_AUTH_REQ_NONE);
 
   if (status != ESP_OK) {
     ESP_LOGW(TAG, "Write failed: %d", status);
