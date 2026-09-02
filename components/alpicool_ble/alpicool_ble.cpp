@@ -451,6 +451,8 @@ void AlpicoolClimate::control(const climate::ClimateCall &call) {
 
   if (call.get_target_temperature().has_value()) {
     this->parent_->send_set_target((int8_t) *call.get_target_temperature(), this->zone_);
+    this->target_temperature = *call.get_target_temperature();
+    this->publish_state();
   }
 
   // Power and Eco/Max are shared appliance settings, so they are owned by Zone 1.
